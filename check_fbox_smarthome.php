@@ -12,8 +12,8 @@
 # There is no warranty of any kind, explicit or implied, for anything this software does or does not do.
 #
 # Updates for this piece of software could be available under the following URL:
-#   GIT:   https://github.com/fkrueger-2/check_fbox_smarthome
-#   Home:  http://dev.techno.holics.at/check_fbox_smarthome/
+#   GIT:   https://github.com/fkrueger/check_fbox_smarthome
+#   Home:  https://dev.techno.holics.at/check_fbox_smarthome/
 #
 # Based on / Inspired by two of the scripts found at: http://www.tdressler.net/ipsymcon/fritz_aha.html
 
@@ -21,25 +21,26 @@ $cfgname = "/etc/nagios/check_fbox_smarthome.cfg";
 if (!file_exists($cfgname)) { $cfgname = "./check_fbox_smarthome.cfg"; } # fall back to local config file for testing
 
 $DEBUG = false;
+$VERBOSE = false;
 
 
 ## TODO remove your associated .rrd and .xml files in your pnp4nagios install, if you upgraded from 0.0.3 to 0.0.4 !!!
 ##
 ## TODO add support for more (or more general) support of the AHA API (until check_nwc_health gets
-##      around to adding decent fritz!box support that works for more than one version of the
-##      fritz!box ;-))
+##      around to adding decent fritz!box support that works for more than one version of the fritz!box).
 
 #### DONT EDIT BELOW HERE (unless you know what you are doing) ####
 
 $minsensortoggletime = 15;      # allow toggling every 15 seconds at the most
 
+$loginblocktime = -1;           # lazy way to get more precise "login failed" output
 $config = array();
 
 # program info
 $PROG_NAME     = 'check_fbox_smarthome';
 $PROG_VERSION  = '0.1.0';
 $PROG_EMAIL    = 'fkrueger-dev-checkfboxsmarthome@holics.at';
-$PROG_URL      = 'http://dev.techno.holics.at/check_fbox_smarthome/';
+$PROG_URL      = 'https://dev.techno.holics.at/check_fbox_smarthome/';
 
 define ("STATE_OK", 0);
 define ("STATE_WARNING", 1);
@@ -72,7 +73,7 @@ function check_for_functions ($funcnames = [])
       print "Error: Needed PHP function '$func' doesn't exist!\n";
       print "\n";
       print "PHP removed this function from the default PHP installation, so it has to be installed manually.\n";
-      print "Try 'yum install $fedorapkgname' or 'apt-get install $debianpkgname', depending on your OS.\n";
+      print "Try 'yum install $fedorapkgname' (or dnf) on RHEL/CentOS/Fedora, 'apt-get install $debianpkgname' on Debian/Ubuntu/Mint/etc., depending on your OS.\n";
       print "\n";
       $functionwasmissing = true;
     }
@@ -88,11 +89,17 @@ function usage ($detailed = "")
 {
   global $PROG_NAME, $PROG_VERSION, $PROG_EMAIL, $PROG_URL, $cfgname, $STATE_UNKNOWN, $myself;
 
-  print "\nusage: $myself [-d] [-h] [--temp-warn-min n] [--temp-warn-max n] <whattodo> <fboxhosts> <sensornames>\n";
+  print "\nusage: $myself [-d] [-h] [--battery-warn-level n] [-o|--use-temp-offset] [--temp-warn-min n] [--temp-warn-max n] <whattodo> <fboxhosts> <sensornames>\n";
   print "\n";
-  print "    <whattodo>     can be 'read', 'toggle', 'switchon', 'switchoff'.\n";
-  print "    <fboxhosts>    can be '*' for all (default) or a search pattern on your config's section-names\n";
-  print "    <sensornames>  can be '*' for all (default) or a search pattern ('*' can be used for listing all avail. sensors, too)\n";
+  print "    <whattodo>                         can be 'read', 'toggle', 'switchon', 'switchoff'.\n";
+  print "    <fboxhosts>                        can be '*' for all (default) or a search pattern on your config's section-names\n";
+  print "    <sensornames>                      can be '*' for all (default) or a search pattern ('*' can be used for listing all avail. sensors, too)\n";
+  print "\n";
+  print "    --battery-warn-level               battery warn level of heater control deivces (in %) for warn/crit checking (crit is supplied by f!box device configuration)\n";
+  print "    -o / --use-temp-offset             apply temperature offset set in fbox for device to temperature sensor value during temp-warn checking\n";
+  print "    --temp-warn-min / --temp-warn-max  set temperature sensor allowed min-max range (causes WARN if actual temp value is outside that range)\n";
+  print "    -d                                 show debug information\n";
+  print "    -h                                 show this help\n";
   print "\n";
   print "This plugin is used to monitor and control AVM Fritz!DECT 200 and Comet DECT (and probably other \"Smart Home\" devices) with Nagios.\n";
   print "\n";
@@ -114,6 +121,7 @@ function usage ($detailed = "")
 ;; another fbox named 'fboxname2' (so multiple fboxen are supported)
 ;[fboxname2]
 ;host='fboxname2.hostname'
+;login='neededlogin'
 ;pw='anotherpasswordtouse'\n";
     print "#####/EXAMPLE CONFIG #####\n\n";
 
@@ -147,7 +155,8 @@ define service{
   print "$PROG_NAME v$PROG_VERSION is licensed under the Apache License, Version 2.0 .
 There is no warranty of any kind, explicit or implied, for anything this software does or does not do.
 
-The main page for this plugin can be found at: $PROG_URL
+The main page for this plugin can be found at:  $PROG_URL
+The main email contact is here:                 $PROG_EMAIL
 
 (c) 2014-2022 The check_fbox_smarthome Authors.
 See the accompanying AUTHORS file for more in-detail information (and email contacts).
@@ -238,17 +247,33 @@ function block_toggle_switch ($prefix="", $fboxname="", $sensorname="", $mintogg
 
 function get_sid ($loginurl = "", $fboxlogin = "", $fboxpw = "")
 {
+  global $DEBUG, $VERBOSE;
+  global $loginblocktime;
+
+  $blocktime = -1;
+  $challenge = null;
+  $sid = null;
 
   # get challengestring from login-responsepage
+  if (($DEBUG == true) and ($VERBOSE == true)) { dbgprint("dbg", "get_sid: request  1 loginurl '$loginurl'"); }
   $http_response = file_get_contents ($loginurl);
+  if (($DEBUG == true) and ($VERBOSE == true)) { dbgprint("dbg", "get_sid: response 1 is '''$http_response'''"); }
 
   if (preg_match("/<Challenge>(\w+)<\/Challenge>/i", $http_response, $res))
     { $challenge = $res[1]; }
   if (preg_match("/<SID>([\da-f]+)<\/SID>/i", $http_response, $res))
     { $sid = $res[1]; }
+  if (preg_match("/<BlockTime>(\d+)<\/BlockTime>/i", $http_response, $res))
+    { $blocktime = $res[1]; }
 
   if ((isset($sid)) and (preg_match("/^[0]+$/",$sid)) and (isset($challenge)))
   {
+    if ($blocktime > 0)                             # XXX we care about blocktime only if the fbox-returned sid is invalid.
+    {
+      $loginblocktime = floor($blocktime);
+      return (null);
+    }
+
     # sid is null, got challenge
     $sid = "";
     # build password response
@@ -261,7 +286,9 @@ function get_sid ($loginurl = "", $fboxlogin = "", $fboxpw = "")
     $challenge_response = $challenge ."-". $md5;
     # send to box
     $url = $loginurl. "?response=" .$challenge_response. ($fboxlogin == "" ? "" : "&username=$fboxlogin");
+    if (($DEBUG == true) and ($VERBOSE == true)) { dbgprint("dbg", "get_sid: request  2 loginurl '$loginurl'"); }
     $http_response = file_get_contents($url);
+    if (($DEBUG == true) and ($VERBOSE == true)) { dbgprint("dbg", "get_sid: response 2 is '''$http_response'''"); }
     # check answer
     if (preg_match("/<SID>([\da-f]+)<\/SID>/i", $http_response, $res))
     {
@@ -303,6 +330,7 @@ function unserialize_xml($input, $callback = null, $recurse = false)
 
 function get_actor_infos ($url)
 {
+  global $DEBUG, $VERBOSE;
   $actorident2infos = array();
 
   # get all infos the device can give us in one fell swoop:
@@ -337,7 +365,8 @@ function get_actor_infos ($url)
 #</devicelist>
 
     $actorarr = unserialize_xml ($actorxml);
-#    print "actorarr is ''" .print_r ($actorarr, true). "''\n\n";
+    if (($DEBUG == true) and ($VERBOSE == true))
+      { dbgprint ("dbg", "get_actor_infos", "final actorarr is ''" .print_r ($actorarr, true). "''"); }
 
 ## IS BEING TURNED (by php) INTO THIS:
 #Array
@@ -414,7 +443,7 @@ function get_actor_infos ($url)
 
 function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="", $sensornames="", $cmd = "")
 {
-  global $myself, $perfdata, $minsensortoggletime, $config, $STATE_CRITICAL, $STATE_UNKNOWN;
+  global $myself, $perfdata, $use_tempoffset, $minsensortoggletime, $loginblocktime, $config, $STATE_CRITICAL, $STATE_UNKNOWN;
   $rc = true;
 
   # api urls
@@ -430,8 +459,11 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
 
   if (!isset($sid))
   {
-    dbgprint ("dbg", "Fritz-Login", "Login failed");
-    print "CRITICAL - Logon to Fbox on host '$fboxhost' (section $fboxname) failed\n";
+    $loginblockedmsg = "";
+    if ($loginblocktime > 0)
+      { $loginblockedmsg = " (login blocked for another $loginblocktime seconds)"; }
+    dbgprint ("dbg", "Fritz-Login", "Login failed$loginblockedmsg");
+    print "CRITICAL - Logon to Fbox on host '$fboxhost' (section $fboxname) failed$loginblockedmsg\n";
     exit ($STATE_CRITICAL);
   }
 
@@ -455,8 +487,8 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     $actorinfo = $actorident2infos[$ain];
     $url = $ahaurl ."?sid=$sid&ain=$ain";
 
-    $name = ((isset($actorinfo['name'])) ? $actorinfo['name'] : "");
-    $present = ((isset($actorinfo['present'])) ? $actorinfo['present'] : "0");
+    $name = (isset($actorinfo['name'])) ? $actorinfo['name'] : "";
+    $present = (isset($actorinfo['present'])) ? $actorinfo['present'] : "0";
     if ((!isset($name)) or ($name == "")) { continue; }
     if (!preg_match ("/$sensornames/", $name)) { continue; }
 
@@ -494,32 +526,42 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     } # end if cmd == toggle
 
 
+    # for recording battery power levels (no idea if batterylow can be anything other than 0.. and how you'd set it in the fritz!box) (ie. heater control FRITZ!DECT 301 or Comet DECT)
+    $battery         = (isset($actorinfo['battery'])) ? floor($actorinfo['battery']) : null;
+    $batterylow      = (isset($actorinfo['batterylow'])) ? floor($actorinfo['batterylow']) : null;
     # ie. 193 => 19.3 deg Celsius
-    $temperature = null;
-    if (isset($actorinfo['temperature'])) { $temperature    = floor($actorinfo['temperature']['celsius']) / 10; }
+    $temperature     = (isset($actorinfo['temperature']['celsius'])) ? floor($actorinfo['temperature']['celsius']) / 10 : null;
+    $tempoffset      = (isset($actorinfo['temperature']['offset'])) ? floor($actorinfo['temperature']['offset']) / 10 : null;
+    if ($use_tempoffset == true) { $temperature = $temperature + $tempoffset; }
     # either 0 or 1
-    $switchstatus = null;
-	if (isset($actorinfo['switch'])) { $switchstatus        = (floor($actorinfo['switch']['state']) > 0 ? 1 : 0); }
+    $switchstatus    = (isset($actorinfo['switch']['state'])) ? (floor($actorinfo['switch']['state']) > 0 ? 1 : 0) : null;
     # 207990 / 1000 = 207.990 W
-    $currentusage = null;
-    if (isset($actorinfo['powermeter'])) { $currentusage    = floor($actorinfo['powermeter']['power']) / 1000; }
+    $currentusage    = (isset($actorinfo['powermeter']['power'])) ? floor($actorinfo['powermeter']['power']) / 1000 : null;
     # 700128 / 1000 = 700.128 kWh
-    $totalenergyused = null;
-    if (isset($actorinfo['powermeter'])) { $totalenergyused = floor($actorinfo['powermeter']['energy']) / 1000; }
+    $totalenergyused = (isset($actorinfo['powermeter']['energy'])) ? floor($actorinfo['powermeter']['energy']) / 1000 : null;
 
-    dbgprint ("dbg", "do_fbox_command", "Before preparing output, have name '$name': temp '$temperature' - status '$switchstatus' - curr '$currentusage' - total '$totalenergyused'");
+    $outbatt = (isset($battery)) ? $battery : "not-set";
+    $outbattlow = (isset($batterylow)) ? $batterylow : "not-set";
+    $outtemp = (isset($temperature)) ? $temperature : "not-set";
+    $outtempoffset = (isset($tempoffset)) ? $tempoffset : "not-set";
+    $outswst = (isset($switchstatus)) ? $switchstatus : "not-set";
+    $outcurrusage = (isset($currentusage)) ? $currentusage : "not-set";
+    $outtoten = (isset($totalenergyused)) ? $totalenergyused : "not-set";
 
-    # need at least one value
-    if ( (!isset($temperature)) && (!isset($switchstatus)) && (!isset($currentusage)) && (!isset($totalenergyused)) )
+    dbgprint ("dbg", "do_fbox_command", "Before preparing output, have name '$name': temp '$outtemp' (" .(!$use_tempoffset ? "NOT ":""). "using temp-offset of ${outtempoffset}C) - status '$outswst' - curr '$outcurrusage' - total '$outtoten'");
+
+    # XXX we need at least one value (if heater device) or all values (if ie. a powerswitch)..
+    #     hence the making-sure of having a non-null value even for null information from the fbox actors information.
+    if ( (!isset($temperature)) and (!isset($switchstatus)) and (!isset($actorinfo['powermeter']['power'])) and (!isset($actorinfo['powermeter']['energy'])) )
     {
-      dbgprint ("dbg", "get_data", "Got no reply for some of the fields in section $fboxname.. Skipping the rest.");
+      dbgprint ("dbg", "get_data", "Got insufficient information from actor device " .$actorinfo['name']. " in section $fboxname.. Skipping the rest.");
       continue;
     }
 
     # prepare output
 
     # store data for later output
-    dbgprint ("dbg", "got_data", "$name: " .(($switchstatus == "1") ? "on" : "off"). " is at $temperature deg Celsius: Power actual: $currentusage W, power total: $totalenergyused kWh");
+    dbgprint ("dbg", "got_data", "Sensor '$name': state=${outswst}, reads $temperature deg Celsius: Power actual: $currentusage W, power total: $totalenergyused kWh");
 
     if (!isset($perfdata[$fboxname]))
       { $perfdata[$fboxname] = array(); }
@@ -527,6 +569,8 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     if (!isset($perfdata[$fboxname][$ain]))
     {
       $perfdata[$fboxname][$ain] = [ 'name' => $name, 'present' => $present, 'currentusage' => $currentusage, 'totalenergyused' => $totalenergyused, 'switchstatus' => $switchstatus, 'temperature' => $temperature ];
+      if (isset($battery))    { $perfdata[$fboxname][$ain]['battery'] = $battery; }
+      if (isset($batterylow)) { $perfdata[$fboxname][$ain]['batterylow'] = $batterylow; }
     }
     else
     {
@@ -578,7 +622,7 @@ $foundconfiguredfboxhost = false;
 if ((isset($config)) and (sizeof($config) > 0))
 {
   reset ($config);
-  while (list ($fboxname, $fboxinfo) = each ($config))
+  foreach ($config as $fboxname => $fboxinfo)
   {
     if ((isset($fboxname)) and ($fboxname != "") and (isset($fboxinfo['host'])) and ($fboxinfo['host'] != "") and (isset($fboxinfo['pw'])) and ($fboxinfo['pw'] != ""))
     {
@@ -605,21 +649,29 @@ $myself = $ARGV[0];
 $cmd = "";
 $fboxhosts = "";
 $sensornames = "";
+# default okay temperature range:
 $temperature_warn_min = -10;
 $temperature_warn_max = 40;
+$use_tempoffset = false;						# XXX unwise default, but leaves backwards compatibility intact
+
+# battery warn level (crit = from fbox)
+$battery_warn_level = 10;     # %
 
 $perfdata = array();
 
 
 ### args
 $rest_index = 0;
-$options = getopt("dh", ["debug","help","temp-warn-min:","temp-warn-max:"], $rest_index);
+$options = getopt("dhvo", [ "debug", "help", "verbose", "battery-warn-level:", "use-temp-offset", "temp-warn-min:", "temp-warn-max:" ], $rest_index);
 $rest_index--; # we'll add offset for the positional parameters
 
-if (isset($options["d"]) || isset($options["debug"])) { $DEBUG = true; }
+if (isset($options["battery-warn-level"])) { $battery_warn_level = $options["battery-warn-level"]; }
 if (isset($options["temp-warn-min"])) { $temperature_warn_min = $options["temp-warn-min"]; }
 if (isset($options["temp-warn-max"])) { $temperature_warn_max = $options["temp-warn-max"]; }
-dbgprint ("dbg", "temp0", "temperature_warn_min=$temperature_warn_min temperature_warn_max=$temperature_warn_max");
+if (isset($options["d"]) or isset($options["debug"])) { $DEBUG = true; }
+if (isset($options["o"]) or isset($options["use-temp-offset"])) { $use_tempoffset = true; }
+if (isset($options["v"]) or isset($options["verbose"])) { $VERBOSE = true; }
+dbgprint ("dbg", "temp0", "temp-warn range after arg-parsing at min/max: $temperature_warn_min / $temperature_warn_max");
 
 if (isset($ARGV[$rest_index+1]))
 {
@@ -647,17 +699,17 @@ elseif (($cmd == "") or ($fboxhosts == "") or ($sensornames == ""))
 
 ### parse through config sections, looking for the supplied hosts/sensors
 reset($config);
-while (list($fboxname, $info) = each($config))
+foreach ($config as $fboxname => $fboxinfo)
 {
   if ((isset($fboxname)) and ($fboxname != ""))
   {
     if (preg_match("/$fboxhosts/", $fboxname))    # found matching host
     {
-      if (!isset($info['login'])) { $info['login'] = ""; }    # XXX normal fbox login has no login, but secure has.
-      if ((isset($info['host'])) and ($info['host'] != "") and (isset($info['pw'])) and ($info['pw'] != ""))
+      if (!isset($fboxinfo['login'])) { $fboxinfo['login'] = ""; }    # XXX normal fbox login has no login, but secure has.
+      if ((isset($fboxinfo['host'])) and ($fboxinfo['host'] != "") and (isset($fboxinfo['pw'])) and ($fboxinfo['pw'] != ""))
       {
-        dbgprint ("dbg", "do_fbox_command", "cmd '$cmd' " .($info['login'] == "" ? "" : "for login '" .$info['login']. "' "). "for host '" .$info['host']. "' (section $fboxname), sensornames '$sensornames'");
-        do_fbox_command ($fboxname, $info['host'], $info['login'], $info['pw'], $sensornames, $cmd);
+        dbgprint ("dbg", "do_fbox_command", "cmd '$cmd' " .($fboxinfo['login'] == "" ? "" : "for login '" .$fboxinfo['login']. "' "). "for host '" .$fboxinfo['host']. "' (section $fboxname), sensornames '$sensornames'");
+        do_fbox_command ($fboxname, $fboxinfo['host'], $fboxinfo['login'], $fboxinfo['pw'], $sensornames, $cmd);
       } # end if got validlooking data in current config entry
     }
   }
@@ -682,14 +734,26 @@ else
 {
   # create perfdata string
   reset ($perfdata);
-  while (list($fboxname, $info) = each ($perfdata))
+  foreach ($perfdata as $fboxname => $fboxinfo)
   {
-    while (list($ain, $data) = each ($info))
+    foreach ($fboxinfo as $ain => $data)
     {
-      if (isset($data['currentusage'])) { $perfdatastring .= " ${fboxname}_" .$data['name']. "_actual=" .($data['currentusage']/1000). "kW;;;;"; }
-      if (isset($data['totalenergyused'])) { $perfdatastring .= " ${fboxname}_" .$data['name']. "_total=" .$data['totalenergyused']. "kWh;;;;"; }
-      if (isset($data['switchstatus'])) { $perfdatastring .= " ${fboxname}_" .$data['name']. "_status=" .$data['switchstatus']. ";;;;"; }
-      if (isset($data['temperature'])) { $perfdatastring .= " ${fboxname}_" .$data['name']. "_temperature=" .($data['temperature']). "C;;;;"; }
+      $outname = preg_replace("/[ \t]/", "", $data['name']);
+      if (isset($data['currentusage'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_actual=" .($data['currentusage']/1000). "kW;;;;"; }
+      if (isset($data['totalenergyused'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_total=" .$data['totalenergyused']. "kWh;;;;"; }
+      if (isset($data['switchstatus']))
+      {
+        $outswst = (!isset($data['switchstatus'])) ? "" : $data['switchstatus'];
+        $perfdatastring .= " ${fboxname}_" .$outname. "_status=${outswst};;;;";
+      }
+      if (isset($data['temperature'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_temperature=" .$data['temperature']. "C;;;${temperature_warn_min}C;${temperature_warn_max}C"; }
+      if (isset($data['battery']))
+      {
+        $batterylevelwarn = $battery_warn_level. "%";
+        $batterylevelcrit = (!isset($data['batterylow']))  ? "" : $data['batterylow']. "%";
+        $batterylevelcurrent = $data['battery']. "%";
+        $perfdatastring .= " ${fboxname}_" .$outname. "_battery=${batterylevelcurrent};${batterylevelwarn};${batterylevelcrit};${batterylevelcrit};100%";			# cur, warn, crit, min, max
+      }
     } # end parsing fboxhost-data
   } # end parsing fboxhosts
 
@@ -699,26 +763,77 @@ else
 
   # then the nagios output
   reset ($perfdata);
-  while (list($fboxname, $info) = each ($perfdata))
+  foreach ($perfdata as $fboxname => $fboxinfo)
   {
-    while (list($ain, $data) = each ($info))
+    foreach ($fboxinfo as $ain => $data)
     {
-      if (!$data['present']) { $nagiosrc = $STATE_WARN; $status = "WARN"; } # warn if any component is not present
-      $nagiosoutput .= "$fboxname: " . $data['name'] . ($data['present'] ? "" : "NOT ") . " present";
-	  if (isset($data['switchstatus']) && isset($data['currentusage'])) {
-        $nagiosoutput .= " > Sensor " . (($data['switchstatus'] > 0) ? "is active and uses " . $data['currentusage'] . "W power" : "is inactive");
-      };
-	  if (isset($data['temperature'])) {
-dbgprint ("dbg", "temp", "temperature=" . $data['temperature'] . " temperature_warn_min=$temperature_warn_min temperature_warn_max=$temperature_warn_max");
-        if (($data['temperature'] < $temperature_warn_min) || ($data['temperature'] > $temperature_warn_max)) {
-          $nagiosrc = $STATE_WARN; $status = "WARN"; # warn if we exceed warn range
-        }
-        $nagiosoutput .= " > Temperature " . $data['temperature'] . " C";
-      };
+      if (!$data['present']) { $nagiosrc = $STATE_WARNING; $status = "WARN"; }       # warn if any component is not present
+      $nagiosoutput .= "$fboxname: Sensor '" .$data['name']. "' (" .($data['present'] ? "" : "NOT ") . "present):";
+
+      if ( (isset($data['switchstatus'])) and (isset($data['currentusage'])) )
+        { $nagiosoutput .= " Powerswitch " . (($data['switchstatus'] > 0) ? "is active and uses " . $data['currentusage'] . "W power" : "is inactive"). ","; }
+
+      if (isset($data['temperature']))
+      {
+        dbgprint ("dbg", "temp-checks", "Sensor '" .$data['name']. "': temperature=" . $data['temperature'] . " temperature_warn_min=$temperature_warn_min temperature_warn_max=$temperature_warn_max");
+        if (($data['temperature'] < $temperature_warn_min) || ($data['temperature'] > $temperature_warn_max))
+          { $nagiosrc = $STATE_WARNING; $status = "WARN"; }                          # warn if we exceed warn range
+        $nagiosoutput .= " Temperature is at " .$data['temperature'] ." C (min/max " .$temperature_warn_min. "/" .$temperature_warn_max. "),";
+      }
+      ## XXX see comment below about function bitmask
+      # else
+      # {
+      #   dbgprint ("dbg", "temp-checks", "Sensor '" .$data['name']. "' didn't return a valid temperature value.");
+      #   $nagiosrc = $STATE_UNKNOWN; $status = "UNKNOWN";
+      # }
+
+      if (isset($data['battery']))
+      {
+        dbgprint ("dbg", "battery-checks", "Sensor '" .$data['name']. "': current battery level " .$data['battery']. "% (lowlevel " .$data['batterylow']. "%)");
+
+        if ($data['battery'] <= $data['batterylow'])
+          { $nagiosrc = $STATE_CRITICAL; $status = "CRITICAL"; }
+        elseif ($data['battery'] <= $battery_warn_level)
+          { $nagiosrc = $STATE_WARNING; $status = "WARN"; }
+        elseif ($data['battery'] <= 0)																					# XXX in case, batterylow can be anything other than 0, we have this.
+          { $nagiosrc = $STATE_CRITICAL; $status = "CRITICAL"; }
+        ## XXX the following might be needed lateron, once we differentiate between the myriads of Fritz - DECT devices (ie. via functionbitmask):
+        #
+        #35712 = Power switch: FRITZ!DECT 200
+        #-> 1000 1011 1000 0000
+        #640 = FRITZ!Powerline 546E, FRITZ!DECT 210
+        #-> 0010 1000 0000
+        #
+        #320 = Heater control: Comet DECT*, FRITZ!DECT 301
+        #-> 0001 0100 0000
+        #
+        #1024 = FRITZ!DECT Repeater 100
+        #-> 0100 0000 0000
+        #
+        #1 = HAN-FUN unit devices
+        #-> 1
+        #
+        #8208 = HAN-FUN (bit 12) ALARM (bit 3)
+        #-> 0010 0000 0001 0000
+        #
+        #237572 = HAN-FUN color bulb
+        #-> 0011 1010 0000 0000 0100
+        #
+        # else
+        #   { $nagiosrc = $STATE_UNKNOWN; $status = "UNKNOWN"; }									# and this doesnt make much sense; it's just so unknown values don't return OK value for the checks.
+        ##
+        $nagiosoutput .= " Battery level " .$data['battery'] ."% (warn=" .$battery_warn_level. "%, crit=" .$data['batterylow']. "%),";
+      }
+      ## XXX see functionbitmask statement above.
+      #else
+      #  { $nagiosrc = $STATE_UNKNOWN; $status = "UNKNOWN"; } 									  # no data, unknown state
+      ##
+      $nagiosoutput = substr($nagiosoutput, 0, -1);
+
       $nagiosoutput .= "\n";
     } # end parsing fboxhost-data
   } # end parsing fboxhosts
-  $nagiosoutput = "$status Fritzbox SmartHome |$perfdatastring\n$nagiosoutput";
+  $nagiosoutput = "$status - Fritzbox SmartHome |$perfdatastring\n$nagiosoutput";
 } # end if got perfdata
 
 
