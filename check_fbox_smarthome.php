@@ -38,7 +38,7 @@ $config = array();
 
 # program info
 $PROG_NAME     = 'check_fbox_smarthome';
-$PROG_VERSION  = '0.1.0';
+$PROG_VERSION  = '0.1.1';
 $PROG_EMAIL    = 'fkrueger-dev-checkfboxsmarthome@holics.at';
 $PROG_URL      = 'https://dev.techno.holics.at/check_fbox_smarthome/';
 
@@ -91,15 +91,19 @@ function usage ($detailed = "")
 
   print "\nusage: $myself [-d] [-h] [--battery-warn-level n] [-o|--use-temp-offset] [--temp-warn-min n] [--temp-warn-max n] <whattodo> <fboxhosts> <sensornames>\n";
   print "\n";
-  print "    <whattodo>                         can be 'read', 'toggle', 'switchon', 'switchoff'.\n";
-  print "    <fboxhosts>                        can be '*' for all (default) or a search pattern on your config's section-names\n";
-  print "    <sensornames>                      can be '*' for all (default) or a search pattern ('*' can be used for listing all avail. sensors, too)\n";
+  print "    <whattodo>                           can be 'read', 'toggle', 'switchon', 'switchoff'.\n";
+  print "    <fboxhosts>                          can be '*' for all (default) or a search pattern on your config's section-names\n";
+  print "    <sensornames>                        can be '*' for all (default) or a search pattern ('*' can be used for listing all avail. sensors, too)\n";
   print "\n";
-  print "    --battery-warn-level               battery warn level of heater control deivces (in %) for warn/crit checking (crit is supplied by f!box device configuration)\n";
-  print "    -o / --use-temp-offset             apply temperature offset set in fbox for device to temperature sensor value during temp-warn checking\n";
-  print "    --temp-warn-min / --temp-warn-max  set temperature sensor allowed min-max range (causes WARN if actual temp value is outside that range)\n";
-  print "    -d                                 show debug information\n";
-  print "    -h                                 show this help\n";
+  print "    --battery-warn-level                 check: battery warn level of heater control devices (in %) for warn/crit checking (crit is supplied by f!box device configuration)\n";
+  print "    --temp-warn-min / --temp-warn-max    check: set temperature sensor allowed min-max range (causes WARN if actual temp value is outside that range)\n";
+  print "\n";
+  print "    --perfdata-no(batt|power|temp)units  perfdata: do not use units in perfdata for battery, power or temperature perfdata.\n";
+  print "    --perfdata-dataonly                  perfdata: only use sensor data in perfdata (but not the warn/crit level or min/max values)\n";
+  print "    -o / --use-temp-offset               sensor info: apply temperature offset set in fbox for device to temperature sensor value during temp-warn checking\n";
+  print "\n";
+  print "    -d                                   show debug information\n";
+  print "    -h                                   show this help\n";
   print "\n";
   print "This plugin is used to monitor and control AVM Fritz!DECT 200 and Comet DECT (and probably other \"Smart Home\" devices) with Nagios.\n";
   print "\n";
@@ -657,21 +661,30 @@ $use_tempoffset = false;						# XXX unwise default, but leaves backwards compati
 # battery warn level (crit = from fbox)
 $battery_warn_level = 10;     # %
 
+$perfdata_notempunits = false;
+$perfdata_nobattunits = false;
+$perfdata_nopowerunits = false;
+$perfdata_dataonly = false;
+
 $perfdata = array();
 
 
 ### args
 $rest_index = 0;
-$options = getopt("dhvo", [ "debug", "help", "verbose", "battery-warn-level:", "use-temp-offset", "temp-warn-min:", "temp-warn-max:" ], $rest_index);
+$options = getopt("dhvo", [ "debug", "help", "verbose", "battery-warn-level:", "use-temp-offset", "temp-warn-min:", "temp-warn-max:", "perfdata-notempunits", "perfdata-nobattunits", "perfdata-nopowerunits", "perfdata-dataonly" ], $rest_index);
 $rest_index--; # we'll add offset for the positional parameters
 
 if (isset($options["battery-warn-level"])) { $battery_warn_level = $options["battery-warn-level"]; }
+if (isset($options["perfdata-nobattunits"])) { $perfdata_nobattunits = true; }
+if (isset($options["perfdata-nopowerunits"])) { $perfdata_nopowerunits = true; }
+if (isset($options["perfdata-notempunits"])) { $perfdata_notempunits = true; }
+if (isset($options["perfdata-dataonly"])) { $perfdata_dataonly = true; }
+
 if (isset($options["temp-warn-min"])) { $temperature_warn_min = $options["temp-warn-min"]; }
 if (isset($options["temp-warn-max"])) { $temperature_warn_max = $options["temp-warn-max"]; }
-if (isset($options["d"]) or isset($options["debug"])) { $DEBUG = true; }
 if (isset($options["o"]) or isset($options["use-temp-offset"])) { $use_tempoffset = true; }
+if (isset($options["d"]) or isset($options["debug"])) { $DEBUG = true; }
 if (isset($options["v"]) or isset($options["verbose"])) { $VERBOSE = true; }
-dbgprint ("dbg", "temp0", "temp-warn range after arg-parsing at min/max: $temperature_warn_min / $temperature_warn_max");
 
 if (isset($ARGV[$rest_index+1]))
 {
@@ -686,7 +699,10 @@ if (isset($ARGV[$rest_index+1]))
   if ($sensornames == "*") { $sensornames = ".*"; }
 }
 
-dbgprint ("dbg", "args", "cmd: '$cmd', fboxhosts: '$fboxhosts', sensornames: '$sensornames'");
+dbgprint ("dbg", "arg-battery", "battery-warn-level $battery_warn_level%");
+dbgprint ("dbg", "arg-perfdata", "perfdata_nobattunits " .($perfdata_nobattunits ? "true":"false"). ", perfdata_nopowerunits " .($perfdata_nopowerunits ? "true":"false"). ", perfdata_notempunits " .($perfdata_notempunits ? "true":"false"). ", perfdata_dataonly " .($perfdata_dataonly ? "true":"false"));
+dbgprint ("dbg", "arg-temp", "temp-warn now at min/max: $temperature_warn_min / $temperature_warn_max (use_tempoffset? " .($use_tempoffset ? "true":"false"));
+dbgprint ("dbg", "arg-final", "cmd: '$cmd', fboxhosts: '$fboxhosts', sensornames: '$sensornames'");
 
 
 ### print usage, if needed or wanted
@@ -732,6 +748,11 @@ if (sizeof($perfdata) <= 0)
 else
 
 {
+  $battunit = ($perfdata_nobattunits ? "":"%");
+  $powerunitcurrusage = ($perfdata_nopowerunits ? "":"kW");
+  $powerunittotenergy = ($perfdata_nopowerunits ? "":"kWh");
+  $tempunit = ($perfdata_notempunits ? "":"C");
+
   # create perfdata string
   reset ($perfdata);
   foreach ($perfdata as $fboxname => $fboxinfo)
@@ -739,20 +760,38 @@ else
     foreach ($fboxinfo as $ain => $data)
     {
       $outname = preg_replace("/[ \t]/", "", $data['name']);
-      if (isset($data['currentusage'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_actual=" .($data['currentusage']/1000). "kW;;;;"; }
-      if (isset($data['totalenergyused'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_total=" .$data['totalenergyused']. "kWh;;;;"; }
+      # XXX no need to check perfdata_dataonly, since there's already only data being used in the perfdata.
+      if (isset($data['currentusage'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_actual=" .($data['currentusage']/1000). "$powerunitcurrusage;;;;"; }
+      if (isset($data['totalenergyused'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_total=" .$data['totalenergyused']. "$powerunittotenergy;;;;"; }
       if (isset($data['switchstatus']))
       {
         $outswst = (!isset($data['switchstatus'])) ? "" : $data['switchstatus'];
         $perfdatastring .= " ${fboxname}_" .$outname. "_status=${outswst};;;;";
       }
-      if (isset($data['temperature'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_temperature=" .$data['temperature']. "C;;;${temperature_warn_min}C;${temperature_warn_max}C"; }
+
+      $tempcurrent = $data['temperature']. $tempunit;
+      $tempwarn = $tempcrit = $tempmin = $tempmax = "";
+      if (! $perfdata_dataonly)
+      {
+        # XXX not used atm, since it's incompatible with a temp range
+        $tempwarn = "";
+        $tempcrit = "";
+        $tempmin = $temperature_warn_min . $tempunit;
+        $tempmax = $temperature_warn_max . $tempunit;
+      }
+      if (isset($data['temperature'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_temperature=$tempcurrent;$tempwarn;$tempcrit;$tempmin;$tempmax"; }
       if (isset($data['battery']))
       {
-        $batterylevelwarn = $battery_warn_level. "%";
-        $batterylevelcrit = (!isset($data['batterylow']))  ? "" : $data['batterylow']. "%";
-        $batterylevelcurrent = $data['battery']. "%";
-        $perfdatastring .= " ${fboxname}_" .$outname. "_battery=${batterylevelcurrent};${batterylevelwarn};${batterylevelcrit};${batterylevelcrit};100%";			# cur, warn, crit, min, max
+        $battcurrent = $data['battery']. $battunit;
+        $battwarn = $battcrit = $battmin = $battmax = "";
+        if (! $perfdata_dataonly)
+        {
+          $battwarn = $battery_warn_level. $battunit;
+          $battcrit = (!isset($data['batterylow']))  ? "" : $data['batterylow']. $battunit;
+          $battmin = $battcrit;
+          $battmax = "100$battunit";
+        }
+        $perfdatastring .= " ${fboxname}_" .$outname. "_battery=$battcurrent;$battwarn;$battcrit;$battmin;$battmax";			# cur, warn, crit, min, max
       }
     } # end parsing fboxhost-data
   } # end parsing fboxhosts
