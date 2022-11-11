@@ -38,7 +38,7 @@ $config = array();
 
 # program info
 $PROG_NAME     = 'check_fbox_smarthome';
-$PROG_VERSION  = '0.1.1';
+$PROG_VERSION  = '0.1.2';
 $PROG_EMAIL    = 'fkrueger-dev-checkfboxsmarthome@holics.at';
 $PROG_URL      = 'https://dev.techno.holics.at/check_fbox_smarthome/';
 
@@ -89,9 +89,9 @@ function usage ($detailed = "")
 {
   global $PROG_NAME, $PROG_VERSION, $PROG_EMAIL, $PROG_URL, $cfgname, $STATE_UNKNOWN, $myself;
 
-  print "\nusage: $myself [-d] [-h] [--battery-warn-level n] [-o|--use-temp-offset] [--temp-warn-min n] [--temp-warn-max n] <whattodo> <fboxhosts> <sensornames>\n";
+  print "\nusage: $myself [-d] [-h] [--battery-warn-level n] [-o|--use-temp-offset] [--temp-warn-min n] [--temp-warn-max n] [--csv-fpath filepath.csv] <whattodo> <fboxhosts> <sensornames>\n";
   print "\n";
-  print "    <whattodo>                           can be 'read', 'toggle', 'switchon', 'switchoff'.\n";
+  print "    <whattodo>                           can be 'read', 'csv-log', 'toggle', 'switchon', 'switchoff'.\n";
   print "    <fboxhosts>                          can be '*' for all (default) or a search pattern on your config's section-names\n";
   print "    <sensornames>                        can be '*' for all (default) or a search pattern ('*' can be used for listing all avail. sensors, too)\n";
   print "\n";
@@ -100,6 +100,7 @@ function usage ($detailed = "")
   print "\n";
   print "    --perfdata-no(batt|power|temp)units  perfdata: do not use units in perfdata for battery, power or temperature perfdata.\n";
   print "    --perfdata-dataonly                  perfdata: only use sensor data in perfdata (but not the warn/crit level or min/max values)\n";
+  print "    --csv-fpath                          write perf-data into a continous csv-style logfile, adding one line + timestamp (epoch time) and the recorded data on every run (why? think: postprocessing. I use it for openoffice calc)\n";
   print "    -o / --use-temp-offset               sensor info: apply temperature offset set in fbox for device to temperature sensor value during temp-warn checking\n";
   print "\n";
   print "    -d                                   show debug information\n";
@@ -589,6 +590,26 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
 } # end func do_fbox_command
 
 
+
+function write_csv_entry ($csv_fpath = "", $csvout = "", $csvheader = "")
+{
+  $fh = -1;
+  if (! file_exists ($csv_fpath))
+  {
+    $fh = @fopen($csv_fpath, "w");
+    fputs($fh, "$csvheader\n");
+  }
+  else
+  {
+    $fh = @fopen($csv_fpath, "a");
+  }
+
+  fputs($fh, "$csvout\n");
+  @fclose($fh);
+} # end func write_csv_entry
+
+
+
 #
 ### MAIN
 #
@@ -658,6 +679,9 @@ $temperature_warn_min = -10;
 $temperature_warn_max = 40;
 $use_tempoffset = false;						# XXX unwise default, but leaves backwards compatibility intact
 
+$csv_fpath = "/tmp/tmp.$PROG_NAME.csv-out.log";       # the default
+$csvsepchar = ";";
+
 # battery warn level (crit = from fbox)
 $battery_warn_level = 10;     # %
 
@@ -671,9 +695,10 @@ $perfdata = array();
 
 ### args
 $rest_index = 0;
-$options = getopt("dhvo", [ "debug", "help", "verbose", "battery-warn-level:", "use-temp-offset", "temp-warn-min:", "temp-warn-max:", "perfdata-notempunits", "perfdata-nobattunits", "perfdata-nopowerunits", "perfdata-dataonly" ], $rest_index);
+$options = getopt("dhvo", [ "debug", "help", "verbose", "csv-fpath:", "battery-warn-level:", "use-temp-offset", "temp-warn-min:", "temp-warn-max:", "perfdata-notempunits", "perfdata-nobattunits", "perfdata-nopowerunits", "perfdata-dataonly" ], $rest_index);
 $rest_index--; # we'll add offset for the positional parameters
 
+if (isset($options["csv-fpath"])) { $csv_fpath = $options["csv-fpath"]; }
 if (isset($options["battery-warn-level"])) { $battery_warn_level = $options["battery-warn-level"]; }
 if (isset($options["perfdata-nobattunits"])) { $perfdata_nobattunits = true; }
 if (isset($options["perfdata-nopowerunits"])) { $perfdata_nopowerunits = true; }
@@ -689,6 +714,7 @@ if (isset($options["v"]) or isset($options["verbose"])) { $VERBOSE = true; }
 if (isset($ARGV[$rest_index+1]))
 {
   $cmd = "read";
+  if ($ARGV[$rest_index+1] == "csv-log") { $cmd = "csv-log"; }
   if ($ARGV[$rest_index+1] == "toggle") { $cmd = "toggle"; }
   if ($ARGV[$rest_index+1] == "switchon") { $cmd = "switchon"; }
   if ($ARGV[$rest_index+1] == "switchoff") { $cmd = "switchoff"; }
@@ -739,6 +765,10 @@ $nagiosrc = $STATE_UNKNOWN;
 $nagiosoutput = "";
 $perfdatastring = "";
 
+$csvoutstring = "";
+$csvheaderstring = "";
+
+
 if (sizeof($perfdata) <= 0)
 {
   $nagiosoutput = "UNKNOWN - no sensor data found for host $fboxhosts, sensors $sensornames";
@@ -753,49 +783,71 @@ else
   $powerunittotenergy = ($perfdata_nopowerunits ? "":"kWh");
   $tempunit = ($perfdata_notempunits ? "":"C");
 
-  # create perfdata string
+  $csvheaderstring = "Timestamp$csvsepchar";
+  $csvoutstring .= time() ."$csvsepchar";
+
+  # create perfdata and csv-out strings
   reset ($perfdata);
   foreach ($perfdata as $fboxname => $fboxinfo)
   {
     foreach ($fboxinfo as $ain => $data)
     {
       $outname = preg_replace("/[ \t]/", "", $data['name']);
+
+      $csvheaderstring .= "${fboxname}_".$outname."_power_current$csvsepchar";
+      $csvheaderstring .= "${fboxname}_".$outname."_power_total$csvsepchar";
+      $csvheaderstring .= "${fboxname}_".$outname."_power_status$csvsepchar";
+      $csvheaderstring .= "${fboxname}_".$outname."_temperature$csvsepchar";
+      $csvheaderstring .= "${fboxname}_".$outname."_battery$csvsepchar";
+
       # XXX no need to check perfdata_dataonly, since there's already only data being used in the perfdata.
-      if (isset($data['currentusage'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_actual=" .($data['currentusage']/1000). "$powerunitcurrusage;;;;"; }
-      if (isset($data['totalenergyused'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_total=" .$data['totalenergyused']. "$powerunittotenergy;;;;"; }
+      if (isset($data['currentusage'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_actual=" .($data['currentusage']/1000). "$powerunitcurrusage;;;;"; $csvoutstring .= "" .($data['currentusage']/1000); }
+      $csvoutstring .= "$csvsepchar";
+      if (isset($data['totalenergyused'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_total=" .$data['totalenergyused']. "$powerunittotenergy;;;;"; $csvoutstring .= "" .($data['totalenergyused']); }
+      $csvoutstring .= "$csvsepchar";
+
       if (isset($data['switchstatus']))
       {
         $outswst = (!isset($data['switchstatus'])) ? "" : $data['switchstatus'];
         $perfdatastring .= " ${fboxname}_" .$outname. "_status=${outswst};;;;";
+        $csvoutstring .= "${outswst}";
       }
+      $csvoutstring .= "$csvsepchar";
 
-      $tempcurrent = $data['temperature']. $tempunit;
+      $tempcurrent = $data['temperature'];
       $tempwarn = $tempcrit = $tempmin = $tempmax = "";
       if (! $perfdata_dataonly)
       {
         # XXX not used atm, since it's incompatible with a temp range
         $tempwarn = "";
         $tempcrit = "";
-        $tempmin = $temperature_warn_min . $tempunit;
-        $tempmax = $temperature_warn_max . $tempunit;
+        $tempmin = $temperature_warn_min;
+        $tempmax = $temperature_warn_max;
       }
-      if (isset($data['temperature'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_temperature=$tempcurrent;$tempwarn;$tempcrit;$tempmin;$tempmax"; }
+
+      if (isset($data['temperature'])) { $perfdatastring .= " ${fboxname}_" .$outname. "_temperature=$tempcurrent$tempunit;$tempwarn;$tempcrit;$tempmin$tempunit;$tempmax$tempunit"; $csvoutstring .= "$tempcurrent"; }
+      $csvoutstring .= "$csvsepchar";
+
       if (isset($data['battery']))
       {
-        $battcurrent = $data['battery']. $battunit;
+        $battcurrent = $data['battery'];
         $battwarn = $battcrit = $battmin = $battmax = "";
         if (! $perfdata_dataonly)
         {
-          $battwarn = $battery_warn_level. $battunit;
-          $battcrit = (!isset($data['batterylow']))  ? "" : $data['batterylow']. $battunit;
+          $battwarn = $battery_warn_level;
+          $battcrit = (!isset($data['batterylow']))  ? "" : $data['batterylow'];
           $battmin = $battcrit;
-          $battmax = "100$battunit";
+          $battmax = "100";
         }
-        $perfdatastring .= " ${fboxname}_" .$outname. "_battery=$battcurrent;$battwarn;$battcrit;$battmin;$battmax";			# cur, warn, crit, min, max
+        $perfdatastring .= " ${fboxname}_" .$outname. "_battery=$battcurrent$battunit;$battwarn$battunit;$battcrit$battunit;$battmin$battunit;$battmax$battunit";			# cur, warn, crit, min, max
+        $csvoutstring .= "$battcurrent";
       }
+      $csvoutstring .= "$csvsepchar";
     } # end parsing fboxhost-data
   } # end parsing fboxhosts
 
+  $csvheaderstring = substr($csvheaderstring, 0, -1);
+  $csvoutstring = substr($csvoutstring, 0, -1);
 
   $nagiosrc = $STATE_OK;
   $status = "OK";
@@ -876,8 +928,18 @@ else
 } # end if got perfdata
 
 
+
 ### and output everything:
-print "$nagiosoutput\n";    # includes perfdatastring on first line
+#
+$nagiosoutput .= "\n";
+
+if ($cmd == "csv-log")
+{
+  $nagiosoutput = "";
+  write_csv_entry($csv_fpath, $csvoutstring, $csvheaderstring);
+}
+
+print "$nagiosoutput";    # includes perfdatastring on first line
 exit ($nagiosrc);
 
 ?>
