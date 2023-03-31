@@ -486,7 +486,7 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
   $ains = array_keys ($actorident2infos);
   usort ($ains, "strcmp");
 
-  # get actor data via provided ain above
+  # get actor data via provided in above
   foreach ($ains as $ain)
   {
     $actorinfo = $actorident2infos[$ain];
@@ -584,8 +584,6 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     }
 
   } # end foreach ain found in actors list
-
-  load_url ($logouturl);
 
   return ($rc);
 } # end func do_fbox_command
