@@ -5,7 +5,7 @@
 
 # Nagios plugin for the Fritz!Box DECT 200 smart-power devices, Comet DECT thermostats (and other "Smart Home" devices by AVM)
 #
-# (c) 2014-2022 The check_fbox_smarthome Authors.
+# (c) 2014-2023 The check_fbox_smarthome Authors.
 # See the accompanying AUTHORS file for more in-detail information (and email contacts).
 #
 # Licensed under the Apache License, Version 2.0
@@ -494,6 +494,7 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
 
     $name = (isset($actorinfo['name'])) ? $actorinfo['name'] : "";
     $present = (isset($actorinfo['present'])) ? $actorinfo['present'] : "0";
+	$errorcode = ((isset($actorinfo['hkr']['errorcode'])) ? $actorinfo['hkr']['errorcode'] : "0"); # Comet DECT error code
     if ((!isset($name)) or ($name == "")) { continue; }
     if (!preg_match ("/$sensornames/", $name)) { continue; }
 
@@ -573,7 +574,7 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
 
     if (!isset($perfdata[$fboxname][$ain]))
     {
-      $perfdata[$fboxname][$ain] = [ 'name' => $name, 'present' => $present, 'currentusage' => $currentusage, 'totalenergyused' => $totalenergyused, 'switchstatus' => $switchstatus, 'temperature' => $temperature ];
+      $perfdata[$fboxname][$ain] = [ 'name' => $name, 'present' => $present, 'errorcode' => $errorcode, 'currentusage' => $currentusage, 'totalenergyused' => $totalenergyused, 'switchstatus' => $switchstatus, 'temperature' => $temperature ];
       if (isset($battery))    { $perfdata[$fboxname][$ain]['battery'] = $battery; }
       if (isset($batterylow)) { $perfdata[$fboxname][$ain]['batterylow'] = $batterylow; }
     }
@@ -859,7 +860,8 @@ else
     foreach ($fboxinfo as $ain => $data)
     {
       if (!$data['present']) { $nagiosrc = $STATE_WARNING; $status = "WARN"; }       # warn if any component is not present
-      $nagiosoutput .= "$fboxname: Sensor '" .$data['name']. "' (" .($data['present'] ? "" : "NOT ") . "present):";
+      if ($data['errorcode'] != 0) { $nagiosrc = $STATE_WARNING; $status = "WARN"; } # warn if any component has an errorcode set
+      $nagiosoutput .= "$fboxname: Sensor '" .$data['name']. "' (" .($data['present'] ? "" : "NOT ") . "present" . ($data['errorcode'] != 0 ? ', errorcode ' . $data['errorcode'] : "") . "):";
 
       if ( (isset($data['switchstatus'])) and (isset($data['currentusage'])) )
         { $nagiosoutput .= " Powerswitch " . (($data['switchstatus'] > 0) ? "is active and uses " . $data['currentusage'] . "W power" : "is inactive"). ","; }
