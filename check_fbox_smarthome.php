@@ -560,10 +560,9 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     #     hence the making-sure of having a non-null value even for null information from the fbox actors information.
     if ( (!isset($temperature)) and (!isset($switchstatus)) and (!isset($actorinfo['powermeter']['power'])) and (!isset($actorinfo['powermeter']['energy'])) )
     {
-      dbgprint ("dbg", "get_data", "Got insufficient information from actor device " .$actorinfo['name']. " in section $fboxname.. Skipping the rest.");
-      # TODO this happens when a Comet Dect device looses the connection to the Fritzbox
+      dbgprint ("dbg", "get_data", "Got insufficient information from actor device " .$actorinfo['name']. " in section $fboxname..");
+      # this happens eg. when a Comet Dect device looses the connection to the Fritzbox
       # we need to give a WARNING, instead of just moving to the next device
-      continue;
     }
 
     # prepare output
