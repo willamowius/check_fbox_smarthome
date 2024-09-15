@@ -536,8 +536,8 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     $battery         = (isset($actorinfo['battery'])) ? floor($actorinfo['battery']) : null;
     $batterylow      = (isset($actorinfo['batterylow'])) ? floor($actorinfo['batterylow']) : null;
     # ie. 193 => 19.3 deg Celsius
-    $temperature     = (isset($actorinfo['temperature']['celsius'])) ? floor($actorinfo['temperature']['celsius']) / 10 : null;
-    $tempoffset      = (isset($actorinfo['temperature']['offset'])) ? floor($actorinfo['temperature']['offset']) / 10 : null;
+    $temperature     = (isset($actorinfo['temperature']['celsius']) && is_numeric($actorinfo['temperature']['celsius'])) ? floor($actorinfo['temperature']['celsius']) / 10 : null;
+    $tempoffset      = (isset($actorinfo['temperature']['offset']) && is_numeric($actorinfo['temperature']['celsius'])) ? floor($actorinfo['temperature']['offset']) / 10 : null;
     if ($use_tempoffset == true) { $temperature = $temperature + $tempoffset; }
     # either 0 or 1
     $switchstatus    = (isset($actorinfo['switch']['state'])) ? (floor($actorinfo['switch']['state']) > 0 ? 1 : 0) : null;
@@ -561,6 +561,8 @@ function do_fbox_command ($fboxname="", $fboxhost="", $fboxlogin="", $fboxpw="",
     if ( (!isset($temperature)) and (!isset($switchstatus)) and (!isset($actorinfo['powermeter']['power'])) and (!isset($actorinfo['powermeter']['energy'])) )
     {
       dbgprint ("dbg", "get_data", "Got insufficient information from actor device " .$actorinfo['name']. " in section $fboxname.. Skipping the rest.");
+      # TODO this happens when a Comet Dect device looses the connection to the Fritzbox
+      # we need to give a WARNING, instead of just moving to the next device
       continue;
     }
 
