@@ -435,8 +435,12 @@ function get_actor_infos ($url)
       {
         $ident = $actor['@attributes']['identifier'];
         $name = $actor['name'];
-        dbgprint ("dbg", "get_actor_infos", "found actor: '$name' (ident:$ident)");
-        $actorident2infos[$ident] = $actor;
+		$manufacturer = $actor['@attributes']['manufacturer'];
+		$productname = $actor['@attributes']['productname'];
+		if ($manufacturer != '0x0000' && $name != '') {
+          dbgprint ("dbg", "get_actor_infos", "found actor: '$name' (ident:$ident)");
+          $actorident2infos[$ident] = $actor;
+        }
       }
     }
   } # end if got actors returned
